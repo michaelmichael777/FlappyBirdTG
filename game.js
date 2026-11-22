@@ -1,6 +1,5 @@
 /* =========================================================
    Pixel Flap - retro pixel-art game (plain JavaScript)
-   Made by: Someone
    The game is drawn on a tiny 180x320 canvas and scaled up 2x by CSS
    (image-rendering: pixelated), so every "pixel" is a crisp square.
    All art is made in code: no image files needed.
