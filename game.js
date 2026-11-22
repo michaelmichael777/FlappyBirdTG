@@ -5,7 +5,7 @@
    (image-rendering: pixelated), so every "pixel" is a crisp square.
    All art is made in code: no image files needed.
 
-   Sections:
+   Sections (cool!):
      1. CONFIG & palette
      2. Telegram layer
      3. Storage (best score)
