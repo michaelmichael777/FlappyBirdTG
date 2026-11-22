@@ -85,7 +85,9 @@
   if (user) $('player').textContent = 'HI ' + String(user.first_name).toUpperCase().slice(0, 10);
 
   function shareScore(score) {
-    const text = `I scored ${score} in Pixel Flap! Can you beat me?`;
+    const text = mode === 'daily'
+      ? `I scored ${score} in today's Pixel Flap daily challenge (${utcDay()})! Same pipes for everyone. Can you beat me?`
+      : `I scored ${score} in Pixel Flap! Can you beat me?`;
     const url = 'https://t.me/share/url?url=' + encodeURIComponent(CONFIG.SHARE_LINK) +
                 '&text=' + encodeURIComponent(text);
     if (tg && tg.openTelegramLink) tg.openTelegramLink(url);
@@ -96,20 +98,75 @@
   const useCloud = tgSupports('6.9') && !!(tg && tg.CloudStorage);
   let best = 0;
 
+  // Tiny key/value helper: Telegram CloudStorage when available, else localStorage.
+  const store = {
+    get(key, cb) {
+      if (useCloud) tg.CloudStorage.getItem(key, (err, v) => cb(err ? null : v));
+      else { let v = null; try { v = localStorage.getItem(key); } catch (e) {} cb(v); }
+    },
+    set(key, value) {
+      if (useCloud) tg.CloudStorage.setItem(key, value);
+      else { try { localStorage.setItem(key, value); } catch (e) {} }
+    },
+  };
+
   function loadBest(done) {
-    if (useCloud) {
-      tg.CloudStorage.getItem('best', (err, value) => {
-        if (!err && value) best = parseInt(value, 10) || 0;
+    store.get('best', (v) => {
+      best = parseInt(v, 10) || 0;
+      store.get('daily', (raw) => {
+        try { if (raw) daily = Object.assign(daily, JSON.parse(raw)); } catch (e) {}
         done();
       });
-    } else {
-      try { best = parseInt(localStorage.getItem('best'), 10) || 0; } catch (e) {}
-      done();
-    }
+    });
   }
-  function saveBest() {
-    if (useCloud) tg.CloudStorage.setItem('best', String(best));
-    else { try { localStorage.setItem('best', String(best)); } catch (e) {} }
+  function saveBest() { store.set('best', String(best)); }
+
+  /* ---------- 3b. Daily challenge ---------- */
+  // Everyone gets the same pipe layout on the same UTC day, so scores are comparable.
+  // Saved as one small JSON value: { date: last day played, best: that day's best,
+  //                                  streak: consecutive days played, last: last day played }
+  let daily = { date: '', best: 0, streak: 0, last: '' };
+
+  function utcDay(offsetDays) {
+    const d = new Date(Date.now() + (offsetDays || 0) * 86400000);
+    return d.toISOString().slice(0, 10);                        // 'YYYY-MM-DD'
+  }
+  function dailyBestToday() { return daily.date === utcDay() ? daily.best : 0; }
+  function dailyStreakShown() {
+    // The streak is still alive if you played today or yesterday.
+    return (daily.last === utcDay() || daily.last === utcDay(-1)) ? daily.streak : 0;
+  }
+  function timeToReset() {
+    const now = new Date();
+    const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    const mins = Math.max(0, Math.floor((next - now.getTime()) / 60000));
+    return String(Math.floor(mins / 60)).padStart(2, '0') + ':' + String(mins % 60).padStart(2, '0');
+  }
+  function hashString(str) {                                    // string -> 32-bit seed
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+  }
+  function seededRandom(seed) {                                 // mulberry32 PRNG
+    return function () {
+      seed = (seed + 0x6D2B79F5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  function recordDaily(finalScore) {
+    const today = utcDay();
+    if (daily.date !== today) { daily.date = today; daily.best = 0; }
+    if (daily.last !== today) {
+      daily.streak = (daily.last === utcDay(-1)) ? daily.streak + 1 : 1;
+      daily.last = today;
+    }
+    const improved = finalScore > daily.best;
+    if (improved) daily.best = finalScore;
+    store.set('daily', JSON.stringify(daily));
+    return improved;
   }
 
   /* ---------- 4. Sound (square-wave chiptune beeps) ---------- */
@@ -235,6 +292,8 @@
   /* ---------- 6. Game state ---------- */
   let state = 'ready';                       // ready | play | over | paused
   let bird, pipes, score, speed, gap, sinceSpawn, overAt, scroll = 0, tick = 0, flash = 0, clouds = [], newBest = false;
+  let mode = 'endless';                      // endless | daily
+  let pipeRandom = Math.random;              // swapped for a seeded generator in daily mode
 
   function setState(s) { state = s; document.body.dataset.state = s; }
 
@@ -252,6 +311,8 @@
     speed = CONFIG.SPEED_START;
     gap = CONFIG.GAP_START;
     sinceSpawn = CONFIG.PIPE_SPACING - 60;   // first pipe arrives soon after starting
+    // Daily mode re-seeds on every attempt, so each retry sees the identical pipes.
+    pipeRandom = mode === 'daily' ? seededRandom(hashString('pixelflap-' + utcDay())) : Math.random;
     newBest = false;
     flash = 0;
     $('score').textContent = '0';
@@ -283,12 +344,21 @@
     flash = 8;                                // white screen flash
     haptic.hit(); sfx.hit();
 
-    if (score > best) { best = score; newBest = true; saveBest(); }
+    let shownBest;
+    if (mode === 'daily') {
+      newBest = recordDaily(score) && score > 0;
+      shownBest = daily.best;
+      $('go-mode').textContent = 'DAILY ' + utcDay() + '  STREAK ' + daily.streak;
+    } else {
+      if (score > best) { best = score; newBest = true; saveBest(); }
+      shownBest = best;
+      $('go-mode').textContent = '';
+    }
 
     const m = medalFor(score);
     $('go-title').textContent = newBest ? 'NEW BEST!' : 'GAME OVER';
     $('go-score').textContent = score;
-    $('go-best').textContent = best;
+    $('go-best').textContent = shownBest;
     const badge = $('go-medal');
     badge.className = 'badge ' + m.cls;
     badge.textContent = m.label;
@@ -334,7 +404,7 @@
     if (sinceSpawn >= CONFIG.PIPE_SPACING) {
       sinceSpawn = 0;
       const minTop = 36, maxTop = FLOOR - gap - 36;
-      pipes.push({ x: W + 2, top: Math.round(minTop + Math.random() * (maxTop - minTop)), gap: Math.round(gap), scored: false });
+      pipes.push({ x: W + 2, top: Math.round(minTop + pipeRandom() * (maxTop - minTop)), gap: Math.round(gap), scored: false });
     }
 
     for (let i = pipes.length - 1; i >= 0; i--) {
@@ -466,7 +536,10 @@
     }
   });
 
-  $('btn-play').addEventListener('click', start);
+  function playMode(m) { mode = m; reset(); start(); }
+  $('btn-play').addEventListener('click', () => playMode('endless'));
+  $('btn-daily').addEventListener('click', () => playMode('daily'));
+  $('btn-menu').addEventListener('click', () => { mode = 'endless'; reset(); });   // back to the menu
   $('btn-retry').addEventListener('click', () => { reset(); start(); });
   $('btn-share').addEventListener('click', () => shareScore(score));
   $('btn-resume').addEventListener('click', () => setState('play'));
@@ -500,11 +573,18 @@
   makeClouds();
   reset();
   loadBest(() => {
-    $('menu-best').textContent = best;
+    refreshMenu();
     $('loading').classList.add('hide');
   });
-  new MutationObserver(() => { $('menu-best').textContent = best; })
+  function refreshMenu() {
+    $('menu-best').textContent = best;
+    $('daily-best').textContent = dailyBestToday();
+    $('daily-streak').textContent = dailyStreakShown();
+    $('daily-reset').textContent = timeToReset();
+  }
+  new MutationObserver(refreshMenu)
     .observe(document.body, { attributes: true, attributeFilter: ['data-state'] });
+  setInterval(refreshMenu, 30000);          // keep the countdown fresh if the menu stays open
 
   requestAnimationFrame(loop);
 })();

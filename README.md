@@ -146,6 +146,27 @@ Positions are rounded to whole pixels when drawing, which keeps the retro look.
 | New bird look | edit the letters in `BIRD_GRID` (14x10); each letter maps to a colour in `BIRD_PAL` |
 | Bigger pixels | lower `W`/`H` in `CONFIG` and the canvas `width`/`height` in `index.html` (keep a 9:16 ratio) |
 | Medal thresholds | `medalFor()` |
+| Daily course reset time | `utcDay()` / `timeToReset()` (currently midnight UTC) |
+
+## Daily challenge
+
+The menu has a **DAILY** button next to PLAY. Daily mode works like this:
+
+- **Same pipes for everyone.** The pipe heights come from a seeded random generator
+  (`seededRandom(hashString('pixelflap-' + utcDay()))` in `game.js`). The seed is today's UTC date, so every
+  player sees the identical layout, and it changes at 00:00 UTC. Retrying re-seeds, so every attempt that day is the same course.
+- **Daily best and streak.** One small JSON value (`daily`) is saved in Telegram CloudStorage
+  (`localStorage` outside Telegram): `{ date, best, streak, last }`. Your streak goes up by one for each consecutive
+  UTC day you finish a daily run, and resets if you skip a day.
+- **Countdown.** The menu shows "NEW IN HH:MM" until the next daily course.
+- **Separate from endless mode.** Daily scores never touch your endless-mode best.
+- **Share text** mentions the date, so friends know they are comparing the same course.
+
+Limits to know about: the daily best and streak live on the player's device/account, so they can be edited
+by a determined cheater. For a real daily leaderboard, send `tg.initData` and the score to a server and verify it
+(section 9). The server can also store the day's seed and replay or sanity-check scores.
+Players whose clock is wrong could see a different day; the game uses the device clock, so a server-provided date
+is the fix if that matters.
 
 ## 9. Next level: leaderboard (needs a backend)
 
